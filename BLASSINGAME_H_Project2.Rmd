@@ -1,0 +1,271 @@
+---
+title: "Project 2"
+author: "Henry Blassingame"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# QuickStart Data Science Bootcamp<br>Cohorts 3 and 4 - Jonathan Fowler
+
+## Project 2 (R)
+
+For this project, think of yourself as a developer on a corporate business intelligence team. You have been given a flat file (CSV format) of login information from Maximo, an asset tracking system the company relies on. Current licensing requires that no more than 95 users in the AUTHORIZED and/or LIMITED groups be online at any given time. The deliverables outlined in this project will be submitted to the IT director, who wants to be sure that the licensing threshold is not exceeded.
+
+### The Data
+
+The data is included in this project. The filename is **Project2Data.csv**.
+
+| Field           | Description                                                    |
+|-----------------|----------------------------------------------------------------|
+| attemptdate     | Date and Time of event                                         |
+| attemptresult   | LOGIN, LOGOUT, TIMEOUT, or SYSLOGOUT                           |
+| userid          | The user triggering the event                                  |
+| type            | User type, i.e., AUTHORIZED                                    |
+| maxsessionuid   | Unique identifer for a session.                                |
+|                 | This will show up from LOGIN to LOGOUT, TIMEOUT, or SYSLOGOUT. |
+
+### Part 1
+
+Let's answer some basic questions about the dataset. You may insert your code below each of these lines.  
+
+**Prework: Load the CSV file into your environment.**  
+
+
+```{r load libraries}
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(RColorBrewer)
+LoginTracking_data <- read.csv("Project2Data.csv", header = TRUE, colClasses = c("character", "factor", "character", "factor", "integer"))
+LoginTracking_data [duplicated(LoginTracking_data ),]
+
+```
+NEXT STEP IS TO:
+1. FILTER OUT SYSLOGOUT USERS
+2. REMOVE ROWS WITH MAXSESSIONUID = 0
+3. FILTER OUT ORPHAN RECORDS T BEGINNING AND END (USERS WHO LOGGED IN BEFORE MIDNIGHT BEFORE THE FIRST, OR LOGGED IN BEFORE THE END OF THE SET )
+4. REMOVE DUPLICATED RECORDS
+```{r}
+
+  filtered_data <- LoginTracking_data[LoginTracking_data$maxsessionuid != 0,]
+  filtered_data <- filtered_data[!is.na(filtered_data$maxsessionuid),]
+  filtered_data <- filtered_data [!duplicated(filtered_data ),]
+  
+  str(filtered_data)
+  unique(filtered_data$attemptresult)
+```
+**1. How many unique users? A simple number will do here, no tables or formatting needed.**  
+```{r}
+  length(unique(filtered_data$userid))
+```  
+**2. How many unique levels, unique users in each? I want a table that shows this information together.**  
+``` {r}
+  tapply(filtered_data$userid, filtered_data$type, FUN=function(x) length(unique(x)))
+``` 
+**3. What is the average session time for each unique group?**  
+
+CREATE TWO NEW DATAFRAMES: PUT THE LOGINS IN ONE, AND THE SESSION ENDINGS IN ANOTHER
+- THE LOGINS FRAME IS BASED ON ATTEMPTRESULT = 'LOGIN'
+- THE LOGOUTS ARE BASED ON THE DIFFERENT POSSIBLE SESSION ENDINGS, KEEPING IN MIND THAT THERE 
+  MAY BE MORE THAN ONE RECORD FOR THESE SESSION END (AND AT DIFFERENT TIMES.)
+```{r build logins and logouts data frames}
+  logins <- filtered_data %>% filter(attemptresult == "LOGIN")
+  logouts <- filtered_data %>% filter (attemptresult == "LOGOUT" | attemptresult == "TIMEOUT" | attemptresult == "RESTART" | attemptresult == "SYSLOGOUT")
+
+```
+*RATIONALE FOR DETERMINING SESSION LENGTH*
+IF THERE ARE MULTIPLE SESSION ENDINGS FOR THE SAME USER/SESSION, USE THE EARLIEST ONE AS THE SESSION END.THIS WILL BE USED TO DETERMINE THE SESSION LENGTH.
+IN LOOKING AT SOME OF THE DATA, THERE MIGHT BE A SYSLOGOUT MULTIPLE HOURS AFTER A USER LOGGED OUT OF MAXIMO OR TIMED OUT.
+THERE MAY ALSO BE CASES WHERE THERE IS ONLY A SYSLOGOUT FOR THE SESSION, SO THAT WILL BE THE RECORD USED TO DETERMINE SESSION LENGTH.
+```{r determine session lengths }
+  filter_out <- logouts %>% group_by(maxsessionuid) %>% filter(attemptdate == min(attemptdate))
+  filter_out
+```
+BUILD THE SESSION DATA USING THE LOGINS AND LOGOUTS 
+```{r build session data frame}
+  session_data <- merge(logins, filter_out, by = "maxsessionuid")
+
+```
+DROP OFF THE CRUFTY BITS, SUCH AS COLUMNS THAT WILL NOT BE USED.
+```{r session data cleanup}
+  session_data$userid.y <- NULL
+  session_data$type.y <- NULL
+
+```
+MAKE THE COLUMN NAMES MEANINGFUL
+```{r rename session frame columns}
+  names(session_data) <-  c( "maxsessionid", "session_begin", "begin_type", "loginid", "user_type", "session_end", "end_type")
+
+```
+THEN SUSS OUT THE SESSION DURATION
+FIRST, CONVERT DATETIMES FROM CHARACTER STRINGS TO SOMETHING USEFUL. 
+THEN GET THE DIFFERENCE BETWEEN SESSION END AND SESSION START
+```{r determine average session length}
+
+  session_data$session_begin <- as_datetime(session_data$session_begin)
+  session_data$session_end <- as_datetime(session_data$session_end)
+  session_data$session_time <- difftime(session_data$session_end, session_data$session_begin, units = "mins")
+  
+  session_data %>% group_by(user_type) %>% summarize(AvgTimeSession = mean(session_time))
+```
+
+
+### Part 2
+
+Your objective in this part is to create a Gantt chart that shows the following:  
+1. One unique userid per row <br>
+2. A Gantt chart on the right <br>
+3. Blocks of time representing when each user logged in, mapped on the time field <br>
+4. User's time blocks colored by which group they belong to <br>
+
+You're dealing with a lot of data, so a single chart that shows all users for the whole month would be impossible to read. How are you going to break this out into multiple, manageable charts? It's okay to produce a chart for each week in the month. Just show the code that creates all the charts. **If you determine a Gantt chart is not appropriate, show me the Gantt anyway and then explain why your changes make sense.**
+
+FIRST, BREAK DOWN THE DATA BY WEEK, SINCE A GANTT CHART FOR THE WHOLE MONTH IS IMPRACTICAL.
+DATA IS BASED ON THE STEPS ABOVE.
+```{r build gantt chart}
+first_week <- session_data[session_data$session_end < '2020-03-08 00:00', ]
+
+ggplot(first_week, aes(x=session_begin , xend=session_end, y=loginid, yend=loginid, color=user_type)) + theme(axis.text.y = element_text(lineheight = 12, size = 6)) + scale_x_discrete(guide=guide_axis(check.overlap=TRUE)) + scale_y_discrete(guide=guide_axis(check.overlap=TRUE)) + geom_segment(size=6) + labs(title = "Concurrent usage over time: Week 1", x = "Session Date", y = "Users") 
+```
+
+LOOKING AT THE FIRST WEEK OF DATA, IT IS APPARENT THAT IT IS UNINTELLIGIBLE. AS AN ALTERNATIVE, PRODUCE A LINE CHART BREAKING DOWN USAGE
+BY TYPE OVER TIME
+```{r begin constructing data for session line chart}
+start_min <- min(session_data$session_begin, na.rm=T)
+end_max <- max(session_data$session_end, na.rm=T)
+t_int <-  seq.POSIXt(start_min, end_max, by = "1 mins")
+
+```
+GET TOTALS
+```{r get total session data}
+n_total <- sapply(t_int, function(tt) sum(session_data$session_begin <= tt & tt <= session_data$session_end))
+```
+GET DATA FOR AUTHORIZED USERS
+```{r get session data for Authorized users}
+ds_auth <- session_data[session_data$user_type == "AUTHORIZED",]
+n_auth <- sapply(t_int, function(tt) sum(ds_auth$session_begin <= tt & tt <= ds_auth$session_end))
+```
+GET DATA FOR LIMITED USERS
+```{r get session data for Limited users}
+ds_ltd <- session_data[session_data$user_type == "LIMITED",]
+n_ltd <- sapply(t_int, function(tt) sum(ds_ltd$session_begin <= tt & tt <= ds_ltd$session_end))
+```
+GET DATA FOR EXPRESS USERS
+```{r get session data for Express users}
+ds_exp <- session_data[session_data$user_type == "EXPRESS",]
+n_exp  <- sapply(t_int, function(tt) sum(ds_exp$session_begin <= tt & tt <= ds_exp$session_end))
+df_user <- data.frame(t_int, n_auth, n_ltd, n_exp)
+df_total <- data.frame(t_int, n_total)
+```
+BUILD A DATA FRAME OF THE HIGH-WATER MARKS FOR ALL LICENSE TYPES, AS WELL AS OVERALL.
+THIS WILL GIVE A QUICK VIEW OF THE MAXIMUM USAGE
+```{r Build data frame for maximum users in total and by type}
+df_highwater <- c("TOTAL" = max(n_total) , "AUTHORIZED" = max(n_auth), "LIMITED" = max(n_ltd), "EXPRESS" = max(n_exp) )
+df_highwater
+```
+BUILD THE PLOT FOR USAGE OVERALL AND BY LICENSE TYPE FOR THE MONTH
+```{r Plot usage by license type over the month}
+ggplot(df_user) + geom_line(aes(color="AUTHORIZED", x=t_int, y=n_auth), size = 0.2) + geom_line(aes( color="LIMITED", x=t_int, y=n_ltd), size=0.2) + geom_line(aes(color="EXPRESS", x=t_int, y=n_exp), size=0.2) + geom_line(aes(color="TOTAL USERS", x=t_int, y=n_total), size=0.3) + labs(title="Concurrent Users by Type", x="Login Date/time", y="Users", color = "License Types") + theme_gray() + scale_color_brewer(palette="RdBu")
+```
+
+
+### Part 3
+
+This project required you to think critically about the request(s) you were given, clarify information from the customer, and work together as a team. In the section below, please write a short paragraph that answers the following questions: 
+1. Did the Gantt chart request make sense? What was your process in determining how to show the data?<br>
+2. What sort of cleaning did you have to do to the data? What data points did you remove and why?<br>
+3. Did you find it difficult to ask the customer (me) clarifying questions?<br>
+4. Did you take advantage of the student worksessions? How did those help you?<br>
+5. How have you grown as a practitioner through the course of this project?<br>
+
+```
+As an exercise in visualization the Gantt chart made sense. However, while it seemed to show an overall pattern
+of system usage, it failed to account for the number of users in the system, nor the frequency of logins 
+(or brevity thereof.) In the end I decided to plot usage by license type over time, much as I do in my current 
+monthly Cocurrent Usage Report.
+
+In general usage, however, I find that my management doesn't look at the visualizations of the data, but 
+focuses on the high water marks, to see how close peak usage is running compared to licensing, and then using
+that number over several months to determine whether more licenses are needed, and to justify the number being 
+purchased.
+This was also an interesting exercise in data cleaning, and especially in seeing how inconsistently the system
+records LoginTracking data. For example, there were a large number of sessions with a SessionID of 0. These had
+to be eliminated because there was no way to meaningfully correlate them. Despite several searches online, I
+never found a reason for these. I may need to open a ticket to Support just to find out. 
+ 
+Another anomaly was that there were many cases where there were multiple endings for a single SessionID. My
+method for cleaning these was to take the earliest among them, since generally the latter record was a 
+SYSLOGOUT, and occurred several hours after the previous session end.
+
+Asking questions of the customer wasn't an issue, since it primarily involved questions relating to how the data
+should be presented. This wasn't altogether different from my experience developing my original report in Excel, 
+since in that case it began with my manager asking for a way in which we could determine how many users were 
+using the system at any given time, and how many of each license type were in use. After spenfing some time
+looking at the available data, building some test queries, and quite a bit of time thinking about the problem,
+I had a result I could present to my manager. He and I worked together -- with him asking questions to better 
+understand the result, and then looking into specific instances to verify the data -- and after several 
+iterations produced the Excel sheet I presented earlier in class.
+
+The online work sessions during this project were invaluable. There were several times I had questions or doubts
+(for example, formatting this markdown document), and through talking about the problems I had and sharing my 
+screen with the others, I found that the way I had the document formatted was incorrect. (I wondered why the 
+syntax highlighting didn't work, and why strings between dollar signs looked funny.) In addition, there were
+several times that I was able to share things I had learned with others in the session. 
+
+In general, the experience wasn't all that different from my day-to-day work. I have been in IT since the late
+80s and a developer since the late 90s, and currently work in a team of about 10 people. We're all well-versed 
+in the applications we support, but each of us tend to specialize somewhat in our particular areas. In addition, 
+there are several other applications within our portfolio that some of us support, while others do not. Our 
+work comes in through a ticketing system, and we either take incoming tickets based on our specialization and
+workload, or they will be assigned to us. Since we're a team, we regularly have informal discussions among
+ourselves to discuss problems we're working on, solutions we've tried, or to brainstorm new ideas. We also
+share knowledge in semi-formal lunch and learn sessions to cross-train the team.
+
+Growth... In general, based on the above, I think my growth so far has been more a matter of increments rather 
+than leaps forward. I think my largest growth has been in becoming more comfortable with using R and its 
+attendant pacakges as a problem solving tool, and more recently in becoming more familiar with markdown,
+which I had not used before. This has also given me some ideas for taking the "bones" of this project 
+and using them to build a more robust concurrent usage application that can run without as much
+manual intervention as my current solution.
+
+```
+
+### Submissions
+
+Because we all will be working with the same data, you will only need to send me an updated version of this Markdown file. Please save it as *lastname_firstinitial_Project2.Rmd* and email to me directly at [jonathan.fowler@quickstart.com](mailto:jonathan.fowler@quickstart.com). Submissions must be made by **May 22 2020 11:59PM ET**. 
+
+### Resources 
+
+#### Gantt charts
+
+[https://www.statology.org/gantt-chart-r-ggplot2/](https://www.statology.org/gantt-chart-r-ggplot2/) <br>
+[https://stats.andrewheiss.com/misc/gantt.html](https://stats.andrewheiss.com/misc/gantt.html) <br> 
+[https://davetang.org/muse/2017/02/03/gantt-chart-using-r/](https://davetang.org/muse/2017/02/03/gantt-chart-using-r/) <br>
+[https://datascienceplus.com/visualize-your-cvs-timeline-with-r-gantt-style/](https://datascienceplus.com/visualize-your-cvs-timeline-with-r-gantt-style/) <br>
+[https://edwinth.github.io/blog/paletti/](https://edwinth.github.io/blog/paletti/)
+[https://drsimonj.svbtle.com/creating-corporate-colour-palettes-for-ggplot2](https://drsimonj.svbtle.com/creating-corporate-colour-palettes-for-ggplot2)
+[http://www.sthda.com/english/wiki/ggplot2-colors-how-to-change-colors-automatically-and-manually](http://www.sthda.com/english/wiki/ggplot2-colors-how-to-change-colors-automatically-and-manually)
+
+
+#### R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
